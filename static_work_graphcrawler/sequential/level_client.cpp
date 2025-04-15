@@ -1,4 +1,6 @@
 #include <iostream>
+#include <thread>
+#include <mutex>
 #include <string>
 #include <queue>
 #include <unordered_set>
@@ -9,11 +11,14 @@
 #include "rapidjson/error/error.h"
 #include "rapidjson/reader.h"
 
+const int MAX_THREADS =8;
+std::mutex visited_mutex;
+std::mutex level_mutex;
 
 struct ParseException : std::runtime_error, rapidjson::ParseResult {
-    ParseException(rapidjson::ParseErrorCode code, const char* msg, size_t offset) : 
-        std::runtime_error(msg), 
-        rapidjson::ParseResult(code, offset) {}
+  ParseException(rapidjson::ParseErrorCode code, const char* msg, size_t offset) : 
+      std::runtime_error(msg), 
+      rapidjson::ParseResult(code, offset) {}
 };
 
 #define RAPIDJSON_PARSE_ERROR_NORETURN(code, offset) \
@@ -101,6 +106,25 @@ vector<string> get_neighbors(const string& json_str) {
     return neighbors;
 }
 
+// Function to process nodes in parallel
+void process_nodes(CURL* curl, const vector<string>& nodes, unordered_set<string>& visited, vector<string>& next_level) {
+  for (const auto& s : nodes) {
+    try {
+      for (const auto& neighbor : get_neighbors(fetch_neighbors(curl, s))) {
+        std::lock_guard<std::mutex> lock(visited_mutex);
+        if (!visited.count(neighbor)) {
+          visited.insert(neighbor);
+          std::lock_guard<std::mutex> level_lock(level_mutex);
+          next_level.push_back(neighbor);
+        }
+      }
+    } catch (const ParseException& e) {
+      std::cerr<<"Error while fetching neighbors of: "<<s<<std::endl;
+    }
+  }
+  curl_easy_cleanup(curl); 
+}
+
 // BFS Traversal Function
 vector<vector<string>> bfs(CURL* curl, const string& start, int depth) {
   vector<vector<string>> levels;
@@ -109,30 +133,39 @@ vector<vector<string>> bfs(CURL* curl, const string& start, int depth) {
   levels.push_back({start});
   visited.insert(start);
 
-  for (int d = 0;  d < depth; d++) {
+  for (int d = 0; d < depth; d++) {
     if (debug)
-      std::cout<<"starting level: "<<d<<"\n";
-    levels.push_back({});
-    for (string& s : levels[d]) {
-      try {
-	if (debug)
-	  std::cout<<"Trying to expand"<<s<<"\n";
-	for (const auto& neighbor : get_neighbors(fetch_neighbors(curl, s))) {
-	  if (debug)
-	    std::cout<<"neighbor "<<neighbor<<"\n";
-	  if (!visited.count(neighbor)) {
-	    visited.insert(neighbor);
-	    levels[d+1].push_back(neighbor);
-	  }
-	}
-      } catch (const ParseException& e) {
-	std::cerr<<"Error while fetching neighbors of: "<<s<<std::endl;
-	throw e;
-      }
+        std::cout << "Starting level: " << d << "\n";
+
+    vector<string> next_level;
+    vector<string>& current_level = levels[d];
+
+    int num_nodes = current_level.size();
+    int thread_count = min(MAX_THREADS, num_nodes);
+    vector<thread> threads;
+
+    // Divide current level nodes among threads
+    int batch_size = (num_nodes + thread_count - 1) / thread_count;
+
+    for (int t = 0; t < thread_count; ++t) {
+        int start_idx = t * batch_size;
+        int end_idx = min(start_idx + batch_size, num_nodes);
+        if (start_idx >= end_idx) break;
+
+        // Each thread gets its own CURL handle
+        CURL* thread_curl = curl_easy_init();
+        vector<string> subset(current_level.begin() + start_idx, current_level.begin() + end_idx);
+
+        threads.emplace_back(process_nodes, thread_curl, subset, std::ref(visited), std::ref(next_level));
     }
-  }
-  
-  return levels;
+
+    for (auto& th : threads)
+        th.join();
+
+    levels.push_back(next_level);
+}
+
+return levels;
 }
 
 int main(int argc, char* argv[]) {
