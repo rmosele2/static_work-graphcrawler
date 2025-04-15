@@ -1,0 +1,18 @@
+# Parallel Level-by-Level Graph Crawler
+
+This project implements a parallel breadth-first search (BFS) traversal that queries a web API to explore a graph of actors and movies. The traversal is performed level-by-level using multithreading, making it efficient for large graphs.
+
+Given a starting node (e.g., an actor like "Tom Hanks") and a depth `d`, it fetches all nodes reachable within `d` steps using parallel requests for each level of BFS.
+
+# Files
+
+- `level_client.cpp`: Main C++ source file implementing the parallel BFS.
+- `Makefile`: Builds the `level_client` executable.
+- `slurm_script.sh`: SLURM batch script for running the program on Centaurus
+
+# Compilation
+
+Use the provided Makefile:
+
+```bash
+make
